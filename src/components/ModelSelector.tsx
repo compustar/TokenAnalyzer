@@ -3,6 +3,7 @@ import { ChevronDown, Check, Download, Search, Sparkles, Flame, RefreshCw } from
 import { ModelDefinition } from '../types';
 import { SUPPORTED_MODELS, HUGGINGFACE_MODELS } from '../data/models';
 import { isHfModelCached } from '../services/tokenizerEngine';
+import { isDisallowedPipelineTag, isDisallowedHfModel, isDisallowedModelId } from '../data/hfTrendingModels';
 
 interface ModelSelectorProps {
   selectedModel: ModelDefinition;
@@ -39,8 +40,10 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
       if (!res.ok) return;
       const data = await res.json();
       if (Array.isArray(data) && data.length > 0) {
-        const liveModels: ModelDefinition[] = data.map((m: any, index: number) => {
-          const author = m.id.includes('/') ? m.id.split('/')[0] : 'community';
+        const liveModels: ModelDefinition[] = data
+          .filter((m: any) => !isDisallowedHfModel(m))
+          .map((m: any, index: number) => {
+            const author = m.id.includes('/') ? m.id.split('/')[0] : 'community';
           const name = m.id.includes('/') ? m.id.split('/')[1] : m.id;
           const score = typeof m.trendingScore === 'number' ? m.trendingScore : 0;
           return {
@@ -85,6 +88,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
   });
 
   const filteredHf = hfModels.filter(m => {
+    if (m.hfModelId && isDisallowedModelId(m.hfModelId)) return false;
     const matchesCategory = selectedCategory === 'all' || selectedCategory === 'hf';
     const q = searchQuery.toLowerCase();
     const matchesSearch =
@@ -129,27 +133,27 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
           type="button"
           id="model-selector-button"
           onClick={() => setIsOpen(!isOpen)}
-          className="flex items-center justify-between gap-2.5 px-3 py-2 rounded-xl bg-white border border-slate-200 hover:border-slate-300 active:scale-[0.99] text-slate-800 text-sm font-medium shadow-xs transition-all w-full sm:w-auto min-w-0 sm:min-w-[270px] focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 cursor-pointer"
+          className="flex items-center justify-between gap-3 px-3.5 py-2 rounded-xl bg-white border border-slate-200 hover:border-slate-300 text-slate-800 text-sm font-medium shadow-xs transition-all w-full sm:w-auto min-w-[270px] focus:outline-hidden focus:ring-2 focus:ring-blue-500/20"
         >
-          <div className="flex items-center gap-2.5 text-left min-w-0">
-            <span className={`w-2 h-2 rounded-full shrink-0 ${selectedModel.family === 'openai' ? 'bg-blue-600' : 'bg-amber-500'}`} />
-            <div className="min-w-0">
-              <div className="flex items-center gap-1.5 flex-wrap">
-                <span className="font-bold text-slate-900 truncate">{selectedModel.name}</span>
+          <div className="flex items-center gap-2.5 text-left">
+            <span className={`w-2 h-2 rounded-full ${selectedModel.family === 'openai' ? 'bg-blue-600' : 'bg-amber-500'}`} />
+            <div>
+              <div className="flex items-center gap-1.5">
+                <span className="font-bold text-slate-900">{selectedModel.name}</span>
                 {selectedModel.badge && (
-                  <span className="px-1.5 py-0.2 rounded text-[10px] font-semibold bg-slate-100 text-slate-700 border border-slate-200 shrink-0">
+                  <span className="px-1.5 py-0.2 rounded text-[10px] font-semibold bg-slate-100 text-slate-700 border border-slate-200">
                     {selectedModel.badge}
                   </span>
                 )}
               </div>
-              <p className="text-[11px] text-blue-600 font-semibold font-mono truncate">
+              <p className="text-[11px] text-blue-600 font-semibold font-mono">
                 {selectedModel.family === 'openai'
                   ? `OpenAI (${selectedModel.encoding})`
                   : `HuggingFace (${selectedModel.hfModelId})`}
               </p>
             </div>
           </div>
-          <ChevronDown className={`w-4 h-4 text-slate-400 shrink-0 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+          <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
         </button>
       </div>
 
@@ -181,25 +185,15 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
       {isOpen && (
         <>
           <div
-            className="fixed inset-0 z-30 bg-slate-900/25 backdrop-blur-xs sm:bg-transparent sm:backdrop-blur-none"
+            className="fixed inset-0 z-30"
             onClick={() => {
               setIsOpen(false);
               setShowCustomInput(false);
             }}
           />
-          <div className="fixed inset-x-2.5 top-16 bottom-6 sm:bottom-auto sm:top-full sm:inset-x-auto sm:left-0 sm:absolute mt-1.5 w-auto sm:w-[480px] max-h-[85vh] sm:max-h-[520px] overflow-y-auto rounded-2xl bg-white border border-slate-200 shadow-2xl z-40 p-2 text-slate-900 divide-y divide-slate-100">
+          <div className="absolute left-0 mt-1.5 w-full sm:w-[460px] max-h-[520px] overflow-y-auto rounded-2xl bg-white border border-slate-200 shadow-xl z-40 p-2 text-slate-900 divide-y divide-slate-100">
             {/* Search and quick filter */}
             <div className="p-2 pb-2.5 space-y-2">
-              <div className="flex items-center justify-between sm:hidden pb-1 border-b border-slate-100">
-                <span className="text-xs font-bold text-slate-900 uppercase tracking-wider">Select Model</span>
-                <button
-                  type="button"
-                  onClick={() => setIsOpen(false)}
-                  className="p-1 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100 text-xs font-bold"
-                >
-                  ✕
-                </button>
-              </div>
               <div className="relative">
                 <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                 <input
@@ -212,11 +206,11 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
               </div>
 
               {/* Encoding filter chips */}
-              <div className="flex items-center gap-1 overflow-x-auto pb-0.5 no-scrollbar text-[11px]">
+              <div className="flex items-center gap-1 overflow-x-auto pb-0.5 text-[11px]">
                 <button
                   type="button"
                   onClick={() => setSelectedCategory('all')}
-                  className={`px-2 py-0.5 rounded-md font-semibold whitespace-nowrap transition-colors shrink-0 ${
+                  className={`px-2 py-0.5 rounded-md font-semibold whitespace-nowrap transition-colors ${
                     selectedCategory === 'all'
                       ? 'bg-slate-900 text-white'
                       : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
@@ -227,7 +221,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
                 <button
                   type="button"
                   onClick={() => setSelectedCategory('o200k_base')}
-                  className={`px-2 py-0.5 rounded-md font-mono whitespace-nowrap transition-colors shrink-0 ${
+                  className={`px-2 py-0.5 rounded-md font-mono whitespace-nowrap transition-colors ${
                     selectedCategory === 'o200k_base'
                       ? 'bg-emerald-600 text-white'
                       : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
@@ -238,7 +232,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
                 <button
                   type="button"
                   onClick={() => setSelectedCategory('cl100k_base')}
-                  className={`px-2 py-0.5 rounded-md font-mono whitespace-nowrap transition-colors shrink-0 ${
+                  className={`px-2 py-0.5 rounded-md font-mono whitespace-nowrap transition-colors ${
                     selectedCategory === 'cl100k_base'
                       ? 'bg-blue-600 text-white'
                       : 'bg-blue-50 text-blue-700 hover:bg-blue-100'
@@ -249,7 +243,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
                 <button
                   type="button"
                   onClick={() => setSelectedCategory('p50k_base')}
-                  className={`px-2 py-0.5 rounded-md font-mono whitespace-nowrap transition-colors shrink-0 ${
+                  className={`px-2 py-0.5 rounded-md font-mono whitespace-nowrap transition-colors ${
                     selectedCategory === 'p50k_base'
                       ? 'bg-indigo-600 text-white'
                       : 'bg-indigo-50 text-indigo-700 hover:bg-indigo-100'
@@ -260,7 +254,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
                 <button
                   type="button"
                   onClick={() => setSelectedCategory('r50k_base')}
-                  className={`px-2 py-0.5 rounded-md font-mono whitespace-nowrap transition-colors shrink-0 ${
+                  className={`px-2 py-0.5 rounded-md font-mono whitespace-nowrap transition-colors ${
                     selectedCategory === 'r50k_base'
                       ? 'bg-purple-600 text-white'
                       : 'bg-purple-50 text-purple-700 hover:bg-purple-100'
@@ -271,7 +265,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
                 <button
                   type="button"
                   onClick={() => setSelectedCategory('hf')}
-                  className={`px-2 py-0.5 rounded-md whitespace-nowrap flex items-center gap-1 transition-colors shrink-0 ${
+                  className={`px-2 py-0.5 rounded-md whitespace-nowrap flex items-center gap-1 transition-colors ${
                     selectedCategory === 'hf'
                       ? 'bg-rose-600 text-white'
                       : 'bg-rose-50 text-rose-700 hover:bg-rose-100'

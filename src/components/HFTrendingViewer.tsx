@@ -14,7 +14,7 @@ import {
   Code2
 } from 'lucide-react';
 import { HFTrendingModel, ModelDefinition } from '../types';
-import { SEED_HF_TRENDING_MODELS } from '../data/hfTrendingModels';
+import { SEED_HF_TRENDING_MODELS, isDisallowedPipelineTag, isDisallowedHfModel } from '../data/hfTrendingModels';
 
 interface HFTrendingViewerProps {
   onSelectHfModel: (model: ModelDefinition) => void;
@@ -45,17 +45,19 @@ export const HFTrendingViewer: React.FC<HFTrendingViewerProps> = ({
       }
       const data = await response.json();
       if (Array.isArray(data) && data.length > 0) {
-        const parsed: HFTrendingModel[] = data.map((m: any) => ({
-          id: m.id,
-          name: m.id.includes('/') ? m.id.split('/')[1] : m.id,
-          author: m.id.includes('/') ? m.id.split('/')[0] : 'community',
-          trendingScore: m.trendingScore || 0,
-          likes: m.likes || 0,
-          downloads: m.downloads || 0,
-          pipelineTag: m.pipeline_tag || 'text-generation',
-          createdAt: m.createdAt,
-          tags: (m.tags || []).slice(0, 6),
-        }));
+        const parsed: HFTrendingModel[] = data
+          .filter((m: any) => !isDisallowedHfModel(m))
+          .map((m: any) => ({
+            id: m.id,
+            name: m.id.includes('/') ? m.id.split('/')[1] : m.id,
+            author: m.id.includes('/') ? m.id.split('/')[0] : 'community',
+            trendingScore: m.trendingScore || 0,
+            likes: m.likes || 0,
+            downloads: m.downloads || 0,
+            pipelineTag: m.pipeline_tag || 'text-generation',
+            createdAt: m.createdAt,
+            tags: (m.tags || []).slice(0, 6),
+          }));
         setModels(parsed);
         setLastUpdated(new Date().toLocaleTimeString());
       }
@@ -79,7 +81,9 @@ export const HFTrendingViewer: React.FC<HFTrendingViewerProps> = ({
   const pipelineTags = useMemo(() => {
     const set = new Set<string>();
     models.forEach((m) => {
-      if (m.pipelineTag) set.add(m.pipelineTag);
+      if (m.pipelineTag && !isDisallowedPipelineTag(m.pipelineTag)) {
+        set.add(m.pipelineTag);
+      }
     });
     return Array.from(set).sort();
   }, [models]);
@@ -87,6 +91,7 @@ export const HFTrendingViewer: React.FC<HFTrendingViewerProps> = ({
   // Filtered models
   const filteredModels = useMemo(() => {
     return models.filter((m) => {
+      if (isDisallowedHfModel(m)) return false;
       const matchesPipeline = selectedPipeline === 'all' || m.pipelineTag === selectedPipeline;
       const q = searchQuery.toLowerCase();
       const matchesSearch =

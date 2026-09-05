@@ -18,72 +18,104 @@ const hfLoadingPromises = new Map<string, Promise<any>>();
 /**
  * Sanitizes tokenizer.json for modern Hugging Face models (like GLM-5.3, GLM-5.3-Flash, Llama-3, etc.)
  * where merges are exported as arrays of string pairs [["Ġ", "Ġ"], ["i", "n"]]
- * instead of space-delimited strings "Ġ Ġ".
+ * instead of space-delimited strings "Ġ Ġ", handles missing model types (like facebook/bart-base),
+ * and polyfills missing structural components.
  */
-export function sanitizeTokenizerJSON(data: any): any {
+export function sanitizeTokenizerJSON(data: any, tokenizerConfig?: any): any {
   if (!data || typeof data !== 'object') return data;
 
-  if (data.model && Array.isArray(data.model.merges)) {
-    data.model.merges = data.model.merges.map((m: any) =>
-      Array.isArray(m) ? m.join(' ') : String(m)
-    );
+  // 1. Normalize model type if omitted in older exports (e.g. facebook/bart-base)
+  if (data.model && typeof data.model === 'object') {
+    if (!data.model.type) {
+      if (Array.isArray(data.model.merges) || Array.isArray(data.merges)) {
+        data.model.type = 'BPE';
+      } else if (data.model.vocab && typeof data.model.vocab === 'object') {
+        data.model.type = 'WordPiece';
+      }
+    }
+
+    // 2. Normalize merges: convert array of string pairs [["Ġ", "Ġ"]] to space-separated strings "Ġ Ġ"
+    if (Array.isArray(data.model.merges)) {
+      data.model.merges = data.model.merges
+        .map((m: any) => (Array.isArray(m) ? m.join(' ') : String(m)))
+        .filter(Boolean);
+    }
   }
 
   if (Array.isArray(data.merges)) {
-    data.merges = data.merges.map((m: any) =>
-      Array.isArray(m) ? m.join(' ') : String(m)
-    );
+    data.merges = data.merges
+      .map((m: any) => (Array.isArray(m) ? m.join(' ') : String(m)))
+      .filter(Boolean);
+  }
+
+  // 3. Added tokens normalization (must be an iterable array)
+  if (!Array.isArray(data.added_tokens)) {
+    data.added_tokens = [];
+  }
+
+  // 4. Safe component polyfills for missing or malformed normalizers/pre-tokenizers/decoders
+  if (data.pre_tokenizer === undefined) {
+    data.pre_tokenizer = { type: 'ByteLevel', add_prefix_space: false, trim_offsets: true };
+  }
+  if (data.post_processor === undefined) {
+    data.post_processor = { type: 'ByteLevel', add_prefix_space: false, trim_offsets: true };
+  }
+  if (data.decoder === undefined) {
+    data.decoder = { type: 'ByteLevel', add_prefix_space: true, trim_offsets: true };
+  }
+  if (data.normalizer === undefined) {
+    data.normalizer = null;
   }
 
   return data;
 }
 
 /**
- * Fallback loader for modern Hugging Face tokenizers that have modern merges format
- * or custom architectures not directly supported by default @xenova/transformers loaders.
+ * Helper to fetch a file from Hugging Face Hub (with browser cache support and progress tracking)
  */
-export async function loadModernHfTokenizerWithAdapter(
+async function fetchHfHubFile(
   hfModelId: string,
-  options: any = {}
-): Promise<any> {
-  const revision = options.revision || 'main';
-  const baseUrl = `https://huggingface.co/${hfModelId}/resolve/${revision}/`;
-  const tokUrl = `${baseUrl}tokenizer.json`;
-  const cfgUrl = `${baseUrl}tokenizer_config.json`;
+  fileName: string,
+  revision: string = 'main',
+  progressCallback?: (data: any) => void
+): Promise<{ ok: boolean; status: number; text: string | null; data: any | null }> {
+  const url = `https://huggingface.co/${hfModelId}/resolve/${revision}/${fileName}`;
 
-  let tokenizerJSON: any = null;
-  let tokenizerConfig: any = null;
-
-  // 1. Check browser cache if enabled
+  // 1. Check browser cache if available
   if (typeof caches !== 'undefined' && env.useBrowserCache) {
     try {
       const cache = await caches.open('transformers-cache');
-      const cachedTok = await cache.match(tokUrl);
-      if (cachedTok) {
-        tokenizerJSON = await cachedTok.json();
-      }
-      const cachedCfg = await cache.match(cfgUrl);
-      if (cachedCfg) {
-        tokenizerConfig = await cachedCfg.json();
+      const cached = await cache.match(url);
+      if (cached) {
+        const text = await cached.text();
+        let data = null;
+        if (fileName.endsWith('.json')) {
+          try {
+            data = JSON.parse(text);
+          } catch {
+            /* ignore json parse error */
+          }
+        }
+        return { ok: true, status: 200, text, data };
       }
     } catch {
-      // Ignore cache match failure, fall back to network fetch
+      // cache read failure is non-blocking
     }
   }
 
-  // 2. Fetch tokenizer.json if not cached
-  if (!tokenizerJSON) {
-    const tokRes = await fetch(tokUrl);
-    if (!tokRes.ok) {
-      throw new Error(`Failed to fetch tokenizer.json for "${hfModelId}" (HTTP ${tokRes.status})`);
+  // 2. Network fetch
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      return { ok: false, status: res.status, text: null, data: null };
     }
 
-    const contentLength = tokRes.headers.get('Content-Length');
+    const contentLength = res.headers.get('Content-Length');
     const total = contentLength ? parseInt(contentLength, 10) : 0;
-
     let rawText = '';
-    if (tokRes.body && total > 0 && options.progress_callback) {
-      const reader = tokRes.body.getReader();
+
+    if (res.body && total > 0 && progressCallback) {
+      const reader = res.body.getReader();
       let loaded = 0;
       const chunks: Uint8Array[] = [];
 
@@ -94,7 +126,7 @@ export async function loadModernHfTokenizerWithAdapter(
           chunks.push(value);
           loaded += value.length;
           const pct = Math.min(100, Math.round((loaded / total) * 100));
-          options.progress_callback({ status: 'progress', progress: pct, file: 'tokenizer.json' });
+          progressCallback({ status: 'progress', progress: pct, file: fileName });
         }
       }
 
@@ -106,70 +138,199 @@ export async function loadModernHfTokenizerWithAdapter(
       }
       rawText = new TextDecoder('utf-8').decode(combined);
     } else {
-      rawText = await tokRes.text();
+      rawText = await res.text();
     }
 
-    tokenizerJSON = JSON.parse(rawText);
-
-    // Save to cache if possible
+    // Cache to browser cache
     if (typeof caches !== 'undefined' && env.useBrowserCache) {
       try {
         const cache = await caches.open('transformers-cache');
         await cache.put(
-          tokUrl,
-          new Response(rawText, { headers: { 'Content-Type': 'application/json' } })
+          url,
+          new Response(rawText, {
+            headers: {
+              'Content-Type': fileName.endsWith('.json') ? 'application/json' : 'text/plain',
+            },
+          })
         );
       } catch {
-        // Cache save failure is non-blocking
+        // ignore cache write error
       }
     }
-  }
 
-  // 3. Fetch tokenizer_config.json if not yet loaded
-  if (!tokenizerConfig) {
-    try {
-      const cfgRes = await fetch(cfgUrl);
-      if (cfgRes.ok) {
-        const cfgText = await cfgRes.text();
-        tokenizerConfig = JSON.parse(cfgText);
-        if (typeof caches !== 'undefined' && env.useBrowserCache) {
-          const cache = await caches.open('transformers-cache');
-          await cache.put(
-            cfgUrl,
-            new Response(cfgText, { headers: { 'Content-Type': 'application/json' } })
-          );
-        }
+    let data = null;
+    if (fileName.endsWith('.json')) {
+      try {
+        data = JSON.parse(rawText);
+      } catch {
+        /* ignore json parse error */
       }
-    } catch {
-      tokenizerConfig = {};
     }
+
+    return { ok: true, status: res.status, text: rawText, data };
+  } catch {
+    return { ok: false, status: 0, text: null, data: null };
   }
-
-  // 4. Sanitize merges array so that BPE model constructor receives space-delimited string merges
-  sanitizeTokenizerJSON(tokenizerJSON);
-
-  // 5. Instantiate tokenizer with matching class or PreTrainedTokenizer fallback
-  const rawClassName = tokenizerConfig?.tokenizer_class?.replace(/Fast$/, '') || 'PreTrainedTokenizer';
-  const mapping = (AutoTokenizer as any).TOKENIZER_CLASS_MAPPING || {};
-  const TargetClass = mapping[rawClassName] || PreTrainedTokenizer;
-
-  return new TargetClass(tokenizerJSON, tokenizerConfig || {});
 }
 
-// Global monkey-patch on AutoTokenizer.from_pretrained to intercept modern tokenizer format errors
+/**
+ * Method 1 (Cascade Loader) + Method 4 (Schema Normalization):
+ * Robust multi-file cascade loader that transparently resolves:
+ * 1. Modern Fast Tokenizer (tokenizer.json) with non-fatal tokenizer_config.json & config.json fallback
+ * 2. Classic BPE (vocab.json + merges.txt) synthesized into fast BPE in-memory (e.g. legacy BART/RoBERTa/GPT2)
+ * 3. WordPiece (vocab.txt) synthesized into fast WordPiece in-memory (e.g. classic BERT)
+ * 4. Architecture detection & fallback for custom auto_map classes (e.g. TikTokenTokenizer)
+ */
+export async function loadHfTokenizerWithCascade(
+  hfModelId: string,
+  options: any = {}
+): Promise<any> {
+  const revision = options.revision || 'main';
+  const progressCallback = options.progress_callback;
+
+  // --- STRATEGY 1: Modern Fast Tokenizer (tokenizer.json) ---
+  const tokFile = await fetchHfHubFile(hfModelId, 'tokenizer.json', revision, progressCallback);
+  if (tokFile.ok && tokFile.data) {
+    const tokenizerJSON = tokFile.data;
+
+    // Fetch companion configuration (non-fatal if missing, as with facebook/bart-base)
+    let tokenizerConfig: any = {};
+    const cfgFile = await fetchHfHubFile(hfModelId, 'tokenizer_config.json', revision);
+    if (cfgFile.ok && cfgFile.data) {
+      tokenizerConfig = cfgFile.data;
+    } else {
+      // Fallback: inspect config.json for special tokens and model type
+      const modelCfgFile = await fetchHfHubFile(hfModelId, 'config.json', revision);
+      if (modelCfgFile.ok && modelCfgFile.data) {
+        tokenizerConfig = modelCfgFile.data;
+      }
+    }
+
+    // Method 4: Sanitize & normalize schema (merges, model.type, added_tokens, components)
+    sanitizeTokenizerJSON(tokenizerJSON, tokenizerConfig);
+
+    // Resolve tokenizer class safely (avoid crashing on custom auto_map classes like TikTokenTokenizer)
+    const rawClassName =
+      tokenizerConfig?.tokenizer_class?.replace(/Fast$/, '') || 'PreTrainedTokenizer';
+    const mapping = (AutoTokenizer as any).TOKENIZER_CLASS_MAPPING || {};
+    const TargetClass = mapping[rawClassName] || PreTrainedTokenizer;
+
+    return new TargetClass(tokenizerJSON, tokenizerConfig);
+  }
+
+  // --- STRATEGY 2: Classic BPE (vocab.json + merges.txt) ---
+  const [vocabFile, mergesFile] = await Promise.all([
+    fetchHfHubFile(hfModelId, 'vocab.json', revision, progressCallback),
+    fetchHfHubFile(hfModelId, 'merges.txt', revision, progressCallback),
+  ]);
+
+  if (vocabFile.ok && vocabFile.data && mergesFile.ok && mergesFile.text) {
+    const vocab = vocabFile.data;
+    const merges = mergesFile.text
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && !line.startsWith('#'));
+
+    // Optional companion config
+    let companionConfig: any = {};
+    const cfgFile = await fetchHfHubFile(hfModelId, 'tokenizer_config.json', revision);
+    if (cfgFile.ok && cfgFile.data) {
+      companionConfig = cfgFile.data;
+    } else {
+      const modelCfgFile = await fetchHfHubFile(hfModelId, 'config.json', revision);
+      if (modelCfgFile.ok && modelCfgFile.data) {
+        companionConfig = modelCfgFile.data;
+      }
+    }
+
+    // In-memory synthesis of standard Fast Tokenizer JSON with Method 4 schema compliance
+    const syntheticBPEJSON = sanitizeTokenizerJSON(
+      {
+        version: '1.0',
+        added_tokens: [],
+        normalizer: null,
+        pre_tokenizer: {
+          type: 'ByteLevel',
+          add_prefix_space: false,
+          trim_offsets: true,
+          use_regex: true,
+        },
+        post_processor: {
+          type: 'ByteLevel',
+          add_prefix_space: false,
+          trim_offsets: true,
+          use_regex: true,
+        },
+        decoder: {
+          type: 'ByteLevel',
+          add_prefix_space: true,
+          trim_offsets: true,
+          use_regex: true,
+        },
+        model: {
+          type: 'BPE',
+          vocab,
+          merges,
+        },
+      },
+      companionConfig
+    );
+
+    const rawClassName =
+      companionConfig?.tokenizer_class?.replace(/Fast$/, '') || 'PreTrainedTokenizer';
+    const mapping = (AutoTokenizer as any).TOKENIZER_CLASS_MAPPING || {};
+    const TargetClass = mapping[rawClassName] || PreTrainedTokenizer;
+
+    return new TargetClass(syntheticBPEJSON, companionConfig);
+  }
+
+  // --- STRATEGY 3: Classic WordPiece (vocab.txt) ---
+  const vocabTxtFile = await fetchHfHubFile(hfModelId, 'vocab.txt', revision, progressCallback);
+  if (vocabTxtFile.ok && vocabTxtFile.text) {
+    const vocabLines = vocabTxtFile.text
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+
+    const vocab: Record<string, number> = {};
+    for (let i = 0; i < vocabLines.length; i++) {
+      vocab[vocabLines[i]] = i;
+    }
+
+    const syntheticWordPieceJSON = sanitizeTokenizerJSON({
+      version: '1.0',
+      added_tokens: [],
+      normalizer: null,
+      pre_tokenizer: { type: 'BertPreTokenizer' },
+      post_processor: null,
+      decoder: { type: 'WordPiece' },
+      model: {
+        type: 'WordPiece',
+        vocab,
+        unk_token: '[UNK]',
+      },
+    });
+
+    return new PreTrainedTokenizer(syntheticWordPieceJSON, {});
+  }
+
+  // --- STRATEGY 4: Native @xenova/transformers Fallback (e.g. SentencePiece spiece.model) ---
+  return await originalFromPretrained(hfModelId, { ...options, legacy: true });
+}
+
+export const loadModernHfTokenizerWithAdapter = loadHfTokenizerWithCascade;
+
+// Global monkey-patch on AutoTokenizer.from_pretrained to intercept and cascade
 const originalFromPretrained = AutoTokenizer.from_pretrained.bind(AutoTokenizer);
 (AutoTokenizer as any).from_pretrained = async function (
   pretrained_model_name_or_path: string,
   options: any = {}
 ): Promise<any> {
   try {
-    return await originalFromPretrained(pretrained_model_name_or_path, options);
+    return await loadHfTokenizerWithCascade(pretrained_model_name_or_path, options);
   } catch (err: any) {
-    const msg = String(err?.message || err);
-    if (msg.includes('split') || msg.includes('x.split') || msg.includes('is not a function')) {
-      return await loadModernHfTokenizerWithAdapter(pretrained_model_name_or_path, options);
-    }
-    throw err;
+    // If cascade loader throws, attempt legacy native load as last resort
+    return await originalFromPretrained(pretrained_model_name_or_path, { ...options, legacy: true });
   }
 };
 
@@ -201,21 +362,9 @@ export async function getHfTokenizerInstance(
         }
       };
 
-      let tokenizer: any;
-      try {
-        tokenizer = await AutoTokenizer.from_pretrained(hfModelId, {
-          progress_callback: progressCallback,
-        });
-      } catch (innerErr: any) {
-        const msg = String(innerErr?.message || innerErr);
-        if (msg.includes('split') || msg.includes('x.split') || msg.includes('is not a function')) {
-          tokenizer = await loadModernHfTokenizerWithAdapter(hfModelId, {
-            progress_callback: progressCallback,
-          });
-        } else {
-          throw innerErr;
-        }
-      }
+      const tokenizer = await loadHfTokenizerWithCascade(hfModelId, {
+        progress_callback: progressCallback,
+      });
 
       hfTokenizerCache.set(hfModelId, tokenizer);
       return tokenizer;
