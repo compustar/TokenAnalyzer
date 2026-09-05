@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      (function() {
+        function isIgnoredError(str) {
+          if (!str) return false;
+          var s = String(str);
+          return (
+            s.indexOf('MetaMask') !== -1 ||
+            s.indexOf('metamask') !== -1 ||
+            s.indexOf('Failed to connect to MetaMask') !== -1 ||
+            s.indexOf('ethereum') !== -1 ||
+            s.indexOf('chrome-extension://') !== -1 ||
+            s.indexOf('moz-extension://') !== -1 ||
+            s.indexOf('safari-extension://') !== -1
+          );
+        }
+
+        window.addEventListener('unhandledrejection', function(event) {
+          try {
+            var reason = event.reason;
+            var text = reason ? (reason.message || reason.stack || String(reason)) : '';
+            if (isIgnoredError(text)) {
+              event.preventDefault();
+              event.stopImmediatePropagation();
+            }
+          } catch (_) {}
+        }, true);
+
+        window.addEventListener('error', function(event) {
+          try {
+            var text = (event.message || '') + ' ' + (event.filename || '');
+            if (event.error && event.error.stack) {
+              text += ' ' + event.error.stack;
+            }
+            if (isIgnoredError(text)) {
+              event.preventDefault();
+              event.stopImmediatePropagation();
+            }
+          } catch (_) {}
+        }, true);
+
+        var origConsoleError = console.error;
+        console.error = function() {
+          try {
+            for (var i = 0; i < arguments.length; i++) {
+              var arg = arguments[i];
+              var text = typeof arg === 'string' ? arg : (arg && (arg.message || arg.stack) ? (arg.message || arg.stack) : String(arg));
+              if (isIgnoredError(text)) {
+                return;
+              }
+            }
+          } catch (_) {}
+          origConsoleError.apply(console, arguments);
+        };
+      })();
+    </script>
+    <title>LLM Tokenizer & Token Analytics</title>
+    <meta name="description" content="Real-time interactive tokenizer and token usage analytics supporting OpenAI tiktoken and Hugging Face models." />
+    <meta property="og:title" content="LLM Tokenizer & Token Analytics" />
+    <meta property="og:description" content="Real-time interactive tokenizer and token usage analytics supporting OpenAI tiktoken and Hugging Face models." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

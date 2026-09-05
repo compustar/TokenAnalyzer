@@ -1,0 +1,6 @@
+{
+  "name": "LLM Tokenizer & Token Analytics",
+  "description": "Real-time interactive tokenizer and token usage analytics supporting OpenAI tiktoken and Hugging Face models.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
